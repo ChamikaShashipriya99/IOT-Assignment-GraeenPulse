@@ -124,19 +124,25 @@ const int SOIL_DRY_RAW = 4095;
 const int SOIL_WET_RAW = 1500;
 const bool SOIL_DEMO_CALIBRATION = true;
 
-const float SOIL_CRITICAL_BELOW = 20.0;
-const float SOIL_WARNING_BELOW = 40.0;
+// Real-world thresholds for a chili plant.
+const float SOIL_CRITICAL_BELOW = 30.0;
+const float SOIL_WARNING_BELOW = 45.0;
+const float SOIL_WARNING_OVERWET = 80.0;
 
-// Example temperature/humidity thresholds.
-const float TEMP_NORMAL_MIN = 18.0;
+const float TEMP_NORMAL_MIN = 22.0;
 const float TEMP_NORMAL_MAX = 30.0;
-const float TEMP_CRITICAL_MIN = 10.0;
-const float TEMP_CRITICAL_MAX = 35.0;
+const float TEMP_WARNING_MIN = 18.0;
+const float TEMP_WARNING_MAX = 35.0;
 
-const float HUM_NORMAL_MIN = 40.0;
+const float HUM_NORMAL_MIN = 50.0;
 const float HUM_NORMAL_MAX = 70.0;
-const float HUM_CRITICAL_MIN = 25.0;
-const float HUM_CRITICAL_MAX = 85.0;
+const float HUM_WARNING_MIN = 35.0;
+const float HUM_WARNING_MAX = 80.0;
+
+const float SOIL_TEMP_NORMAL_MIN = 20.0;
+const float SOIL_TEMP_NORMAL_MAX = 28.0;
+const float SOIL_TEMP_WARNING_MIN = 15.0;
+const float SOIL_TEMP_WARNING_MAX = 32.0;
 
 const int NORMAL = 0;
 const int WARNING = 1;
@@ -307,16 +313,16 @@ float soilPercentage(int raw) {
 }
 
 int evaluateSoil(float moisture) {
-  if (moisture < SOIL_CRITICAL_BELOW) return CRITICAL;
-  if (moisture < SOIL_WARNING_BELOW) return WARNING;
+  if (moisture < SOIL_CRITICAL_BELOW || moisture > SOIL_WARNING_OVERWET) return CRITICAL;
+  if (moisture < SOIL_WARNING_BELOW || moisture > 70.0f) return WARNING;
   return NORMAL;
 }
 
 int evaluateAir(float temperature, float humidity) {
-  if (temperature < TEMP_CRITICAL_MIN ||
-      temperature > TEMP_CRITICAL_MAX ||
-      humidity < HUM_CRITICAL_MIN ||
-      humidity > HUM_CRITICAL_MAX) {
+  if (temperature < TEMP_WARNING_MIN ||
+      temperature > TEMP_WARNING_MAX ||
+      humidity < HUM_WARNING_MIN ||
+      humidity > HUM_WARNING_MAX) {
     return CRITICAL;
   }
 
@@ -324,6 +330,21 @@ int evaluateAir(float temperature, float humidity) {
       temperature > TEMP_NORMAL_MAX ||
       humidity < HUM_NORMAL_MIN ||
       humidity > HUM_NORMAL_MAX) {
+    return WARNING;
+  }
+
+  return NORMAL;
+}
+
+int evaluateSoilTemperature(float soilTempC) {
+  if (isnan(soilTempC)) return CRITICAL;
+  if (soilTempC < SOIL_TEMP_WARNING_MIN ||
+      soilTempC > SOIL_TEMP_WARNING_MAX) {
+    return CRITICAL;
+  }
+
+  if (soilTempC < SOIL_TEMP_NORMAL_MIN ||
+      soilTempC > SOIL_TEMP_NORMAL_MAX) {
     return WARNING;
   }
 
@@ -526,11 +547,16 @@ void updateSensors() {
     }
   }
 
-  // Monitor soil temperature; no plant-specific temperature thresholds yet.
-  // A missing/invalid/stale probe reading is a sensor fault.
-  if (!soilTempOK) {
+  // Check the soil temperature against chili-plant thresholds.
+  int soilTempStatus = soilTempOK ? evaluateSoilTemperature(soilTemperatureC) : CRITICAL;
+  if (soilTempStatus == CRITICAL) {
     overallStatus = CRITICAL;
     message = (!dhtOK || !lightOK) ? "SENSOR ERROR" : "SOIL TEMP ERROR";
+  } else if (soilTempStatus == WARNING) {
+    if (overallStatus < WARNING) {
+      overallStatus = WARNING;
+      message = "SOIL TEMP WARNING";
+    }
   }
 
   updatePlantLED(overallStatus);
