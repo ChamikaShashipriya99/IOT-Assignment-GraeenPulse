@@ -144,6 +144,11 @@ const float SOIL_TEMP_NORMAL_MAX = 28.0;
 const float SOIL_TEMP_WARNING_MIN = 15.0;
 const float SOIL_TEMP_WARNING_MAX = 32.0;
 
+const float LIGHT_VERY_LOW_CRITICAL = 2000.0;
+const float LIGHT_LOW_WARNING = 5000.0;
+const float LIGHT_NORMAL_MIN = 10000.0;
+const float LIGHT_NORMAL_MAX = 40000.0;
+
 const int NORMAL = 0;
 const int WARNING = 1;
 const int CRITICAL = 2;
@@ -351,6 +356,14 @@ int evaluateSoilTemperature(float soilTempC) {
   return NORMAL;
 }
 
+int evaluateLight(float lux) {
+  if (lux < LIGHT_VERY_LOW_CRITICAL) return CRITICAL;
+  if (lux < LIGHT_LOW_WARNING) return WARNING;
+  if (lux < LIGHT_NORMAL_MIN) return WARNING;
+  if (lux <= LIGHT_NORMAL_MAX) return NORMAL;
+  return WARNING; // Very bright; monitor only.
+}
+
 // ========== CONNECTION STATUS ==========
 const char* networkText() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -556,6 +569,29 @@ void updateSensors() {
     if (overallStatus < WARNING) {
       overallStatus = WARNING;
       message = "SOIL TEMP WARNING";
+    }
+  }
+
+  if (lightOK) {
+    int lightStatus = evaluateLight(lux);
+    if (lightStatus == CRITICAL) {
+      overallStatus = CRITICAL;
+      message = "VERY LOW LIGHT";
+    } else if (lux < LIGHT_LOW_WARNING) {
+      if (overallStatus < WARNING) {
+        overallStatus = WARNING;
+        message = "LOW LIGHT";
+      }
+    } else if (lux > LIGHT_NORMAL_MAX) {
+      if (overallStatus < WARNING) {
+        overallStatus = WARNING;
+        message = "VERY HIGH LIGHT";
+      }
+    } else if (lux < LIGHT_NORMAL_MIN) {
+      if (overallStatus < WARNING) {
+        overallStatus = WARNING;
+        message = "LIGHT WARNING";
+      }
     }
   }
 
