@@ -190,7 +190,7 @@ unsigned long lastSensorRead = 0;
 unsigned long lightStartedAt = 0;
 unsigned long sequenceNumber = 0;
 const unsigned long OLED_SCREEN_INTERVAL_MS = 4000UL;
-const int OLED_SCREEN_COUNT = 5;
+const int OLED_SCREEN_COUNT = 3;
 int oledScreen = 0;
 unsigned long lastOLEDScreenChange = 0;
 
@@ -437,10 +437,6 @@ void serviceNetwork() {
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
 
   if (!wifiConnected) {
-    if (!wifiWasConnected) {
-      showStartupStatus("Connecting WiFi...");
-    }
-
     if (wifiWasConnected) {
       Serial.println("Wi-Fi connection lost.");
       secureClient.stop();
@@ -459,8 +455,6 @@ void serviceNetwork() {
   if (!wifiWasConnected) {
     wifiWasConnected = true;
     wifiEverConnected = true;
-
-    showStartupStatus("WiFi OK");
 
     Serial.print("Wi-Fi connected. IP: ");
     Serial.println(WiFi.localIP());
@@ -491,14 +485,12 @@ void serviceNetwork() {
     lastMQTTAttempt = now;
     mqttAttempted = true;
 
-    showStartupStatus("Connecting MQTT...");
     updateNetworkLED();
     Serial.println("Connecting to AWS MQTT...");
 
     // This call can briefly block during a connection attempt.
     if (mqtt.connect(MQTT_CLIENT_ID)) {
       mqttEverConnected = true;
-      showStartupStatus("MQTT OK");
       Serial.println("MQTT broker connected.");
       if (!mqtt.subscribe("greenpulse/ai/care")) {
         Serial.println("Failed to send care subscription.");
@@ -623,6 +615,67 @@ void updateSensors() {
     }
   }
 
+  const char* systemMessages[8];
+  int systemMessageCount = 0;
+
+  auto addSystemMessage = [&](const char* text) {
+    if (systemMessageCount < 8) {
+      systemMessages[systemMessageCount++] = text;
+    }
+  };
+
+  if (!dhtOK) {
+    addSystemMessage("CRIT: DHT SENSOR");
+  } else {
+    if (temperature < TEMP_WARNING_MIN || temperature > TEMP_WARNING_MAX) {
+      addSystemMessage("CRIT: AIR TEMP");
+    } else if (temperature < TEMP_NORMAL_MIN || temperature > TEMP_NORMAL_MAX) {
+      addSystemMessage("WARN: AIR TEMP");
+    }
+
+    if (humidity < HUM_WARNING_MIN || humidity > HUM_WARNING_MAX) {
+      addSystemMessage("CRIT: HUMIDITY");
+    } else if (humidity < HUM_NORMAL_MIN || humidity > HUM_NORMAL_MAX) {
+      addSystemMessage("WARN: HUMIDITY");
+    }
+  }
+
+  if (!soilCalibrated) {
+    addSystemMessage("WARN: SOIL CALIBRATE");
+  } else if (soilPercent < SOIL_CRITICAL_BELOW) {
+    addSystemMessage("CRIT: SOIL TOO DRY");
+  } else if (soilPercent > SOIL_WARNING_OVERWET) {
+    addSystemMessage("CRIT: SOIL TOO WET");
+  } else if (soilPercent < SOIL_WARNING_BELOW) {
+    addSystemMessage("WARN: SOIL DRY");
+  } else if (soilPercent > 70.0f) {
+    addSystemMessage("WARN: SOIL WET");
+  }
+
+  if (!soilTempOK) {
+    addSystemMessage("CRIT: SOIL TEMP ERR");
+  } else if (soilTemperatureC < SOIL_TEMP_WARNING_MIN ||
+             soilTemperatureC > SOIL_TEMP_WARNING_MAX) {
+    addSystemMessage("CRIT: SOIL TEMP");
+  } else if (soilTemperatureC < SOIL_TEMP_NORMAL_MIN ||
+             soilTemperatureC > SOIL_TEMP_NORMAL_MAX) {
+    addSystemMessage("WARN: SOIL TEMP");
+  }
+
+  if (!lightOK) {
+    addSystemMessage("CRIT: LIGHT SENSOR");
+  } else if (lux < LIGHT_VERY_LOW_CRITICAL) {
+    addSystemMessage("CRIT: VERY LOW LIGHT");
+  } else if (lux < LIGHT_NORMAL_MIN) {
+    addSystemMessage("WARN: LOW LIGHT");
+  } else if (lux > LIGHT_NORMAL_MAX) {
+    addSystemMessage("WARN: HIGH LIGHT");
+  }
+
+  if (systemMessageCount == 0) {
+    addSystemMessage("All readings normal");
+  }
+
   updatePlantLED(overallStatus);
 
   Serial.print("Temp: ");
@@ -665,124 +718,88 @@ void updateSensors() {
 
     display.clearDisplay();
     display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("GreenPulse");
-    display.setCursor(82, 0);
-    display.print(networkText());
+    const char* screenTitle;
+    if (oledScreen == 0) {
+      screenTitle = "Network";
+    } else if (oledScreen == 1) {
+      screenTitle = "Sensor readings";
+    } else {
+      if (overallStatus == CRITICAL) screenTitle = "System: CRITICAL";
+      else if (overallStatus == WARNING) screenTitle = "System: WARNING";
+      else screenTitle = "System: NORMAL";
+    }
+
+    display.fillRect(0, 0, 128, 10, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+    int titleX = (128 - (strlen(screenTitle) * 6)) / 2;
+    display.setCursor(titleX, 1);
+    display.print(screenTitle);
+    display.setCursor(titleX + 1, 1);
+    display.print(screenTitle);
+    display.setTextColor(SSD1306_WHITE);
 
     if (oledScreen == 0) {
-      display.setCursor(0, 12);
-      display.print("Temp: ");
-      if (dhtOK) { display.print(temperature, 1); display.print("C"); }
-      else display.print("--");
-
-      display.setCursor(0, 22);
-      display.print("Hum: ");
-      if (dhtOK) { display.print(humidity, 1); display.print("%"); }
-      else display.print("--");
-
-      display.setCursor(0, 32);
-      display.print("Light: ");
-      if (lightOK) { display.print(lux, 0); display.print(" lx"); }
-      else display.print("--");
-
-      display.setCursor(0, 52);
-      display.print("Status: ");
-      display.print(message);
-    } else if (oledScreen == 1) {
-      display.setCursor(0, 12);
-      display.print("Soil: ");
-      if (soilCalibrated) {
-        display.print(soilPercent, 0);
-        display.print("%");
-      } else {
-        display.print(soilRaw);
-      }
-
-      display.setCursor(0, 22);
-      display.print("Soil T: ");
-      if (soilTempOK) { display.print(soilTemperatureC, 1); display.print("C"); }
-      else display.print("ERR");
-
-      display.setCursor(0, 32);
-      display.print("Air: ");
-      if (dhtOK) { display.print(temperature, 1); display.print("C"); }
-      else display.print("--");
-
-      display.setCursor(0, 52);
-      display.print("State: ");
-      if (overallStatus == CRITICAL) display.print("CRIT");
-      else if (overallStatus == WARNING) display.print("WARN");
-      else display.print("OK");
-    } else if (oledScreen == 2) {
-      display.setCursor(0, 12);
-      display.print("Light: ");
-      if (lightOK) { display.print(lux, 0); display.print(" lx"); }
-      else display.print("--");
-
-      display.setCursor(0, 22);
-      display.print("Soil: ");
-      if (soilCalibrated) {
-        display.print(soilPercent, 0);
-        display.print("%");
-      } else {
-        display.print("CAL");
-      }
-
-      display.setCursor(0, 32);
-      display.print("Plant: ");
-      display.print(message);
-
-      display.setCursor(0, 52);
-      display.print("Mood: ");
-      if (overallStatus == CRITICAL) display.print("Need help");
-      else if (overallStatus == WARNING) display.print("Watch");
-      else display.print("Good");
-    } else if (oledScreen == 3) {
       display.setCursor(0, 12);
       display.print("WiFi: ");
       display.print(WiFi.status() == WL_CONNECTED ? "ON" : "OFF");
 
       display.setCursor(0, 26);
       display.print("MQTT: ");
-      display.print(mqtt.connected() ? "ON" : "OFF");
+      if (!mqttConfigured) display.print("DISABLED");
+      else display.print(mqtt.connected() ? "ON" : "OFF");
 
       display.setCursor(0, 40);
-      display.print("RSSI: ");
-      if (WiFi.status() == WL_CONNECTED) {
-        display.print(WiFi.RSSI());
-      } else {
-        display.print("--");
-      }
-
-      display.setCursor(0, 52);
       display.print("IP: ");
-      if (WiFi.status() == WL_CONNECTED) {
-        display.print(WiFi.localIP());
-      } else {
-        display.print("--");
-      }
-    } else {
+      if (WiFi.status() == WL_CONNECTED) display.print(WiFi.localIP());
+      else display.print("--");
+
+      display.setCursor(0, 54);
+      display.print("RSSI: ");
+      if (WiFi.status() == WL_CONNECTED) display.print(WiFi.RSSI());
+      else display.print("--");
+    } else if (oledScreen == 1) {
       display.setCursor(0, 12);
-      display.print("ALERT");
-      display.setCursor(0, 24);
-      display.print(message);
+      display.print("Air temp: ");
+      if (dhtOK) { display.print(temperature, 1); display.print("C"); }
+      else display.print("ERR");
 
-      display.setCursor(0, 36);
-      if (dhtOK) { display.print("T:"); display.print(temperature, 1); }
-      else { display.print("T:ERR"); }
+      display.setCursor(0, 22);
+      display.print("Humidity: ");
+      if (dhtOK) { display.print(humidity, 0); display.print("%"); }
+      else display.print("ERR");
 
-      display.setCursor(48, 36);
-      if (dhtOK) { display.print("H:"); display.print(humidity, 1); }
-      else { display.print("H:ERR"); }
+      display.setCursor(0, 32);
+      display.print("Soil: ");
+      if (soilCalibrated) {
+        display.print(soilPercent, 0);
+        display.print("% R:");
+        display.print(soilRaw);
+      } else {
+        display.print("CAL ");
+        display.print(soilRaw);
+      }
+
+      display.setCursor(0, 42);
+      display.print("Soil temp: ");
+      if (soilTempOK) { display.print(soilTemperatureC, 1); display.print("C"); }
+      else display.print("ERR");
 
       display.setCursor(0, 52);
-      if (lightOK) { display.print("L:"); display.print(lux, 0); }
-      else { display.print("L:ERR"); }
+      display.print("Light: ");
+      if (lightOK) { display.print(lux, 0); display.print(" lx"); }
+      else display.print("ERR");
+    } else {
+      int firstMessage = 0;
+      if (systemMessageCount > 5) {
+        firstMessage = (millis() / 2000UL) % (systemMessageCount - 4);
+      }
 
-      display.setCursor(48, 52);
-      if (soilCalibrated) { display.print("S:"); display.print(soilPercent, 0); }
-      else { display.print("S:ERR"); }
+      for (int row = 0; row < 5; row++) {
+        int messageIndex = firstMessage + row;
+        if (messageIndex >= systemMessageCount) break;
+        display.setCursor(0, 12 + row * 10);
+        display.print(systemMessages[messageIndex]);
+      }
     }
 
     display.display();
