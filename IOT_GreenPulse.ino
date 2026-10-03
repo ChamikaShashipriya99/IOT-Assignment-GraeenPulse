@@ -381,6 +381,22 @@ const char* networkText() {
   return mqtt.connected() ? "M:ON" : "M:OFF";
 }
 
+void showStartupStatus(const char* statusText) {
+  if (!oledReady) {
+    return;
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setTextWrap(false);
+  display.setCursor(0, 0);
+  display.println("GreenPulse");
+  display.setCursor(0, 24);
+  display.println(statusText);
+  display.display();
+}
+
 void updateNetworkLED() {
   if (WiFi.status() != WL_CONNECTED) {
     bool initialAttempt =
@@ -421,6 +437,10 @@ void serviceNetwork() {
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
 
   if (!wifiConnected) {
+    if (!wifiWasConnected) {
+      showStartupStatus("Connecting WiFi...");
+    }
+
     if (wifiWasConnected) {
       Serial.println("Wi-Fi connection lost.");
       secureClient.stop();
@@ -439,6 +459,8 @@ void serviceNetwork() {
   if (!wifiWasConnected) {
     wifiWasConnected = true;
     wifiEverConnected = true;
+
+    showStartupStatus("WiFi OK");
 
     Serial.print("Wi-Fi connected. IP: ");
     Serial.println(WiFi.localIP());
@@ -469,12 +491,14 @@ void serviceNetwork() {
     lastMQTTAttempt = now;
     mqttAttempted = true;
 
+    showStartupStatus("Connecting MQTT...");
     updateNetworkLED();
     Serial.println("Connecting to AWS MQTT...");
 
     // This call can briefly block during a connection attempt.
     if (mqtt.connect(MQTT_CLIENT_ID)) {
       mqttEverConnected = true;
+      showStartupStatus("MQTT OK");
       Serial.println("MQTT broker connected.");
       if (!mqtt.subscribe("greenpulse/ai/care")) {
         Serial.println("Failed to send care subscription.");
@@ -843,7 +867,7 @@ void setup() {
     display.setCursor(0, 0);
     display.println("GreenPulse");
     display.setCursor(0, 24);
-    display.println("Starting...");
+    display.println("Connecting WiFi...");
     display.display();
     lastOLEDScreenChange = millis();
   }
