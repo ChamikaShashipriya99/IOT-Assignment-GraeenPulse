@@ -11,6 +11,7 @@
 #include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <LittleFS.h>
 
 // ========== WIFI SETTINGS ==========
 const char* WIFI_SSID = "Chamika";
@@ -193,6 +194,18 @@ const unsigned long OLED_SCREEN_INTERVAL_MS = 4000UL;
 const int OLED_SCREEN_COUNT = 3;
 int oledScreen = 0;
 unsigned long lastOLEDScreenChange = 0;
+const char* OFFLINE_QUEUE_PATH = "/offline_queue.jsonl";
+const size_t OFFLINE_QUEUE_MAX_BYTES = 64 * 1024;
+const size_t OFFLINE_BATCH_CAPACITY = 4096;
+const unsigned long OFFLINE_BATCH_FLUSH_INTERVAL_MS = 15000UL;
+const unsigned long OFFLINE_REPLAY_INTERVAL_MS = 250UL;
+bool offlineQueueReady = false;
+bool offlineQueuePending = false;
+size_t offlineReplayOffset = 0;
+char offlineBatch[OFFLINE_BATCH_CAPACITY];
+size_t offlineBatchLength = 0;
+unsigned long lastOfflineFlush = 0;
+unsigned long lastOfflineReplay = 0;
 
 // ========== LED HELPERS ==========
 // Both modules must be common-cathode.
@@ -432,6 +445,135 @@ void onMQTTMessage(char* topic, byte* payload, unsigned int length) {
   Serial.write(payload, length);
   Serial.println();
 }
+
+bool flushOfflineBatch() {
+  if (!offlineQueueReady || offlineBatchLength == 0) {
+    return offlineBatchLength == 0;
+  }
+
+  File queueFile = LittleFS.open(OFFLINE_QUEUE_PATH, FILE_APPEND);
+  if (!queueFile) {
+    Serial.println("Could not open offline queue for writing.");
+    return false;
+  }
+
+  size_t queueSize = queueFile.size();
+  if (queueSize + offlineBatchLength > OFFLINE_QUEUE_MAX_BYTES) {
+    queueFile.close();
+    offlineBatchLength = 0;
+    Serial.println("Offline queue full; dropping newest buffered readings.");
+    return false;
+  }
+
+  size_t bytesWritten = queueFile.write(
+    reinterpret_cast<const uint8_t*>(offlineBatch), offlineBatchLength
+  );
+  queueFile.close();
+
+  if (bytesWritten != offlineBatchLength) {
+    offlineBatchLength = 0;
+    Serial.println("Offline queue write incomplete; buffered readings lost.");
+    return false;
+  }
+
+  offlineBatchLength = 0;
+  offlineQueuePending = true;
+  lastOfflineFlush = millis();
+  return true;
+}
+
+bool queueOfflinePayload(const char* payload) {
+  if (!offlineQueueReady) {
+    return false;
+  }
+
+  size_t payloadLength = strlen(payload);
+  size_t recordLength = payloadLength + 1;
+  if (recordLength > OFFLINE_BATCH_CAPACITY) {
+    Serial.println("Sensor payload too large for offline queue.");
+    return false;
+  }
+
+  if (offlineBatchLength + recordLength > OFFLINE_BATCH_CAPACITY) {
+    if (!flushOfflineBatch()) {
+      return false;
+    }
+  }
+
+  memcpy(offlineBatch + offlineBatchLength, payload, payloadLength);
+  offlineBatchLength += payloadLength;
+  offlineBatch[offlineBatchLength++] = '\n';
+  return true;
+}
+
+void serviceOfflineQueue() {
+  if (!offlineQueueReady || !mqtt.connected()) {
+    return;
+  }
+
+  if (offlineBatchLength > 0 &&
+      (!offlineQueuePending ||
+       millis() - lastOfflineFlush >= OFFLINE_BATCH_FLUSH_INTERVAL_MS)) {
+    if (!flushOfflineBatch()) {
+      return;
+    }
+  }
+
+  if (!offlineQueuePending ||
+      millis() - lastOfflineReplay < OFFLINE_REPLAY_INTERVAL_MS) {
+    return;
+  }
+  lastOfflineReplay = millis();
+
+  File queueFile = LittleFS.open(OFFLINE_QUEUE_PATH, FILE_READ);
+  if (!queueFile) {
+    Serial.println("Could not open offline queue for replay.");
+    return;
+  }
+
+  size_t queueSize = queueFile.size();
+  if (offlineReplayOffset >= queueSize) {
+    queueFile.close();
+    LittleFS.remove(OFFLINE_QUEUE_PATH);
+    offlineQueuePending = false;
+    offlineReplayOffset = 0;
+    Serial.println("Offline queue replay complete.");
+    return;
+  }
+
+  if (!queueFile.seek(offlineReplayOffset)) {
+    queueFile.close();
+    Serial.println("Could not seek in offline queue.");
+    return;
+  }
+
+  String queuedPayload = queueFile.readStringUntil('\n');
+  size_t nextOffset = queueFile.position();
+  queueFile.close();
+
+  if (queuedPayload.length() == 0 || queuedPayload.length() >= 512) {
+    Serial.println("Invalid offline queue record; skipping it.");
+    offlineReplayOffset = nextOffset;
+    return;
+  }
+
+  StaticJsonDocument<512> queuedDocument;
+  if (deserializeJson(queuedDocument, queuedPayload) ||
+      !queuedDocument.is<JsonObject>()) {
+    Serial.println("Malformed offline JSON record; skipping it.");
+    offlineReplayOffset = nextOffset;
+    return;
+  }
+
+  if (!mqtt.publish("greenpulse/sensors", queuedPayload.c_str())) {
+    Serial.println("Offline queue publish failed; will retry.");
+    return;
+  }
+
+  offlineReplayOffset = nextOffset;
+  Serial.println("Replayed one offline sensor reading.");
+}
+
 void serviceNetwork() {
   unsigned long now = millis();
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
@@ -507,6 +649,7 @@ void serviceNetwork() {
     }
   }
 
+  serviceOfflineQueue();
   updateNetworkLED();
 }
 
@@ -734,8 +877,6 @@ void updateSensors() {
     int titleX = (128 - (strlen(screenTitle) * 6)) / 2;
     display.setCursor(titleX, 1);
     display.print(screenTitle);
-    display.setCursor(titleX + 1, 1);
-    display.print(screenTitle);
     display.setTextColor(SSD1306_WHITE);
 
     if (oledScreen == 0) {
@@ -840,14 +981,36 @@ void updateSensors() {
   Serial.println(jsonString);
   Serial.println("------------------------------\n");
 
-  if (mqtt.connected() && !mqtt.publish("greenpulse/sensors", jsonString)) {
-    Serial.println("Failed to publish sensor payload.");
+  if (offlineQueuePending || offlineBatchLength > 0 || !mqtt.connected()) {
+    if (!queueOfflinePayload(jsonString)) {
+      Serial.println("Could not save sensor payload to offline queue.");
+    }
+  } else if (!mqtt.publish("greenpulse/sensors", jsonString)) {
+    Serial.println("Failed to publish sensor payload; queueing it.");
+    if (!queueOfflinePayload(jsonString)) {
+      Serial.println("Could not save failed payload to offline queue.");
+    }
   }
 }
 
 // ========== SETUP ==========
 void setup() {
   Serial.begin(115200);
+
+  offlineQueueReady = LittleFS.begin(true);
+  if (offlineQueueReady) {
+    if (LittleFS.exists(OFFLINE_QUEUE_PATH)) {
+      File queueFile = LittleFS.open(OFFLINE_QUEUE_PATH, FILE_READ);
+      if (queueFile) {
+        offlineQueuePending = queueFile.size() > 0;
+        queueFile.close();
+      }
+    }
+    Serial.println("Offline queue storage ready.");
+  } else {
+    Serial.println("LittleFS unavailable; offline readings will not be saved.");
+  }
+  lastOfflineFlush = millis();
 
   pinMode(PLANT_R, OUTPUT);
   pinMode(PLANT_G, OUTPUT);
@@ -937,6 +1100,11 @@ void loop() {
   serviceSoilTemperature();
   serviceNetwork();
   serviceSoilTemperature();
+
+  if (offlineBatchLength > 0 &&
+      millis() - lastOfflineFlush >= OFFLINE_BATCH_FLUSH_INTERVAL_MS) {
+    flushOfflineBatch();
+  }
 
   // Timed sensor updates keep the connection LED responsive.
   if (millis() - lastSensorRead >= 2500UL) {
