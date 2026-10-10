@@ -17,8 +17,8 @@
 #include <LittleFS.h>
 
 // ========== WIFI SETTINGS ==========
-const char* WIFI_SSID = "Chamika";
-const char* WIFI_PASSWORD = "1234567890";
+const char* WIFI_SSID = "Yasi";
+const char* WIFI_PASSWORD = "YasiSena";
 
 // ========== AWS MQTT SETTINGS ==========
 // දැන් මෙය true ලෙස වෙනස් කර ඇත.
@@ -160,9 +160,8 @@ const int CRITICAL = 2;
 const int PUMP_PIN = 33;
 const int PUMP_ON_LEVEL = HIGH;   // Swap ON/OFF levels if the module trigger is active-low.
 const int PUMP_OFF_LEVEL = LOW;
-const unsigned long PUMP_RUN_15_TO_30_MS = 8000UL;
-const unsigned long PUMP_RUN_5_TO_15_MS = 15000UL;
-const unsigned long PUMP_RUN_AT_OR_BELOW_5_MS = 20000UL;
+const unsigned long PUMP_RUN_10_TO_30_MS = 10000UL;
+const unsigned long PUMP_RUN_BELOW_10_MS = 20000UL;
 const unsigned long PUMP_SOAK_MS = 60000UL;
 const int DRY_CONFIRMATION_SAMPLES = 3;
 const int MAX_PULSES_PER_DRY_EPISODE = 3;
@@ -389,14 +388,11 @@ bool soilRawIsValid(int raw) {
 void startPumpPulse() {
   if (!pumpTimerReady || pumpRunning) return;
 
-  if (latestSoilPercent > 15.0f) {
-    pumpRunMs = PUMP_RUN_15_TO_30_MS;
-    pumpRunningStatus = "PUMP ON 8s";
-  } else if (latestSoilPercent > 5.0f) {
-    pumpRunMs = PUMP_RUN_5_TO_15_MS;
-    pumpRunningStatus = "PUMP ON 15s";
+  if (latestSoilPercent >= 10.0f) {
+    pumpRunMs = PUMP_RUN_10_TO_30_MS;
+    pumpRunningStatus = "PUMP ON 10s";
   } else {
-    pumpRunMs = PUMP_RUN_AT_OR_BELOW_5_MS;
+    pumpRunMs = PUMP_RUN_BELOW_10_MS;
     pumpRunningStatus = "PUMP ON 20s";
   }
 
@@ -452,7 +448,7 @@ void serviceAutomaticWatering() {
     wateringStatus = "SOIL SENSOR ERROR";
     return;
   }
-  if (latestSoilPercent > SOIL_CRITICAL_BELOW) {
+  if (latestSoilPercent >= SOIL_CRITICAL_BELOW) {
     dryConfirmationCount = 0;
     pulsesThisDryEpisode = 0;
     wateringStatus = "SOIL OK";
