@@ -160,7 +160,9 @@ const int CRITICAL = 2;
 const int PUMP_PIN = 33;
 const int PUMP_ON_LEVEL = HIGH;   // Swap ON/OFF levels if the module trigger is active-low.
 const int PUMP_OFF_LEVEL = LOW;
-const unsigned long PUMP_RUN_MS = 20000UL;
+const unsigned long PUMP_RUN_15_TO_30_MS = 8000UL;
+const unsigned long PUMP_RUN_5_TO_15_MS = 15000UL;
+const unsigned long PUMP_RUN_AT_OR_BELOW_5_MS = 20000UL;
 const unsigned long PUMP_SOAK_MS = 60000UL;
 const int DRY_CONFIRMATION_SAMPLES = 3;
 const int MAX_PULSES_PER_DRY_EPISODE = 3;
@@ -175,6 +177,8 @@ int dryConfirmationCount = 0;
 int pulsesThisDryEpisode = 0;
 unsigned long pumpStartedAt = 0;
 unsigned long pumpStoppedAt = 0;
+unsigned long pumpRunMs = 0;
+const char* pumpRunningStatus = "PUMP ON";
 const char* wateringStatus = "WAIT SOIL SAMPLE";
 esp_timer_handle_t pumpSafetyTimer = nullptr;
 portMUX_TYPE pumpMux = portMUX_INITIALIZER_UNLOCKED;
@@ -385,16 +389,29 @@ bool soilRawIsValid(int raw) {
 void startPumpPulse() {
   if (!pumpTimerReady || pumpRunning) return;
 
+  if (latestSoilPercent > 15.0f) {
+    pumpRunMs = PUMP_RUN_15_TO_30_MS;
+    pumpRunningStatus = "PUMP ON 8s";
+  } else if (latestSoilPercent > 5.0f) {
+    pumpRunMs = PUMP_RUN_5_TO_15_MS;
+    pumpRunningStatus = "PUMP ON 15s";
+  } else {
+    pumpRunMs = PUMP_RUN_AT_OR_BELOW_5_MS;
+    pumpRunningStatus = "PUMP ON 20s";
+  }
+
   pumpStartedAt = millis();
   pumpRunning = true;
   pulsesThisDryEpisode++;
   portENTER_CRITICAL(&pumpMux);
-  pumpDeadlineUs = esp_timer_get_time() + (int64_t)PUMP_RUN_MS * 1000;
+  pumpDeadlineUs = esp_timer_get_time() + (int64_t)pumpRunMs * 1000;
   gpio_set_level((gpio_num_t)PUMP_PIN, PUMP_ON_LEVEL);
   portEXIT_CRITICAL(&pumpMux);
 
-  wateringStatus = "PUMP ON 20s";
-  Serial.println("Watering: pump ON for 20 seconds.");
+  wateringStatus = pumpRunningStatus;
+  Serial.print("Watering: pump ON for ");
+  Serial.print(pumpRunMs / 1000);
+  Serial.println(" seconds.");
 }
 
 void stopPumpPulse() {
@@ -410,7 +427,7 @@ void stopPumpPulse() {
 }
 
 void serviceAutomaticWatering() {
-  if (pumpRunning && millis() - pumpStartedAt >= PUMP_RUN_MS) {
+  if (pumpRunning && millis() - pumpStartedAt >= pumpRunMs) {
     stopPumpPulse();
   }
 
@@ -418,7 +435,7 @@ void serviceAutomaticWatering() {
   newSoilSample = false;
 
   if (pumpRunning) {
-    wateringStatus = "PUMP ON 20s";
+    wateringStatus = pumpRunningStatus;
     return;
   }
   if (!pumpTimerReady) {
@@ -435,7 +452,7 @@ void serviceAutomaticWatering() {
     wateringStatus = "SOIL SENSOR ERROR";
     return;
   }
-  if (latestSoilPercent >= SOIL_CRITICAL_BELOW) {
+  if (latestSoilPercent > SOIL_CRITICAL_BELOW) {
     dryConfirmationCount = 0;
     pulsesThisDryEpisode = 0;
     wateringStatus = "SOIL OK";
