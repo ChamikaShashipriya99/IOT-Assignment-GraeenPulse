@@ -1,11 +1,9 @@
-#include <Arduino.h>
-#include <esp_timer.h>
-#include <driver/gpio.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <time.h>
+
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <DHT.h>
@@ -14,16 +12,20 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <LittleFS.h>
+
 // ========== WIFI SETTINGS ==========
-const char* WIFI_SSID = "Yasi";
-const char* WIFI_PASSWORD = "YasiSena";
+const char* WIFI_SSID = "Chamika";
+const char* WIFI_PASSWORD = "1234567890";
+
 // ========== AWS MQTT SETTINGS ==========
 // දැන් මෙය true ලෙස වෙනස් කර ඇත.
 const bool ENABLE_MQTT = true;
-// Hostname only: no https\:// prefix.
+
+// Hostname only: no https:// prefix.
 const char* MQTT_HOST = "a1c256s0jz89b5-ats.iot.us-east-1.amazonaws.com";
 const int MQTT_PORT = 8883;
 const char* MQTT_CLIENT_ID = "greenpulse_01";
+
 // ========== CERTIFICATES ==========
 const char* ROOT_CA = \
 "-----BEGIN CERTIFICATE-----\n" \
@@ -46,6 +48,7 @@ const char* ROOT_CA = \
 "5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy\n" \
 "rqXRfboQnoZsG4q5WTP468SQvvG5\n" \
 "-----END CERTIFICATE-----\n" ;
+
 const char* DEVICE_CERT = \
 "-----BEGIN CERTIFICATE-----\n" \
 "MIIDWTCCAkGgAwIBAgIURAieTFQVr3QiahV5IFkPAAu/4mAwDQYJKoZIhvcNAQEL\n" \
@@ -67,6 +70,7 @@ const char* DEVICE_CERT = \
 "NRR150MJHzJ02TU92z4HEuq8we1jjHE8mk1jeJXX95mA8CG9jgWuWXevuTk18nNv\n" \
 "ZGY6AHFSBB7WSvBEU1CDnWxELbVsAUadBdVnFnhvqyRB3C0IZRqlLM5SeLPq\n" \
 "-----END CERTIFICATE-----\n";
+
 const char* PRIVATE_KEY = \
 "-----BEGIN RSA PRIVATE KEY-----\n" \
 "MIIEpAIBAAKCAQEA0GlFITlNlYf/6Nze1vikoOKMffnrfBZZA/sUlh8nB1RdejLm\n" \
@@ -95,48 +99,61 @@ const char* PRIVATE_KEY = \
 "P1Fni43BgZY7EhIGZAh+ut4B16850pBQL3+W1Gk1JsjlfxkesU2eti41QV+wBOQ9\n" \
 "TXyC8jNES1Ef1Oa2hj9I4m2nYJZfwJJd7aJMifoW5MGgRdL9oKznkA==\n" \
 "-----END RSA PRIVATE KEY-----\n";
+
 // ========== SENSOR PINS ==========
 #define DHT_PIN 4
 #define DHT_TYPE DHT22
+
 const int SOIL_PIN = 34;
 const int SOIL_TEMP_PIN = 32;  // DS18B20 DQ, with 4.7k to 3V3
 const uint8_t LIGHT_ADDRESS = 0x23;
+
 // RGB 1: plant conditions
 const int PLANT_R = 25;
 const int PLANT_G = 26;
 const int PLANT_B = 27;
+
 // RGB 2: connectivity
 const int NET_R = 18;
 const int NET_G = 19;
 const int NET_B = 23;
-// ========== SOIL CALIBRATION ==========
-// Set these to measured dry and watered-and-drained sensor readings.
-// Invalid defaults keep watering disabled until the sensor is calibrated.
-const int SOIL_DRY_RAW = 4000;
+
+// ========== SAMPLE SOIL CALIBRATION ==========
+// DEMONSTRATION VALUES ONLY.
+// Replace with actual dry and watered-and-drained readings.
+const int SOIL_DRY_RAW = 4095;
 const int SOIL_WET_RAW = 1500;
+const bool SOIL_DEMO_CALIBRATION = true;
+
 // Real-world thresholds for a chili plant.
 const float SOIL_CRITICAL_BELOW = 30.0;
 const float SOIL_WARNING_BELOW = 45.0;
 const float SOIL_WARNING_OVERWET = 80.0;
+
 const float TEMP_NORMAL_MIN = 22.0;
 const float TEMP_NORMAL_MAX = 30.0;
 const float TEMP_WARNING_MIN = 18.0;
 const float TEMP_WARNING_MAX = 35.0;
+
 const float HUM_NORMAL_MIN = 50.0;
 const float HUM_NORMAL_MAX = 70.0;
 const float HUM_WARNING_MIN = 35.0;
 const float HUM_WARNING_MAX = 80.0;
+
 const float SOIL_TEMP_NORMAL_MIN = 20.0;
 const float SOIL_TEMP_NORMAL_MAX = 28.0;
 const float SOIL_TEMP_WARNING_MIN = 15.0;
 const float SOIL_TEMP_WARNING_MAX = 32.0;
+
 const float LIGHT_VERY_LOW_CRITICAL = 2000.0;
 const float LIGHT_LOW_WARNING = 5000.0;
 const float LIGHT_NORMAL_MIN = 10000.0;
 const float LIGHT_NORMAL_MAX = 40000.0;
+
 const int NORMAL = 0;
 const int WARNING = 1;
 const int CRITICAL = 2;
+
 // ========== DEVICES ==========
 DHT dht(DHT_PIN, DHT_TYPE);
 OneWire soilTempWire(SOIL_TEMP_PIN);
@@ -154,15 +171,19 @@ const unsigned long SOIL_TEMP_CONVERSION_MS = 800UL;
 const unsigned long SOIL_TEMP_MAX_AGE_MS = 6000UL;
 BH1750 lightMeter;
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
+
 WiFiClientSecure secureClient;
 PubSubClient mqtt(secureClient);
+
 bool oledReady = false;
 bool lightReady = false;
 bool mqttConfigured = false;
+
 bool wifiWasConnected = false;
 bool wifiEverConnected = false;
 bool mqttAttempted = false;
 bool mqttEverConnected = false;
+
 unsigned long wifiStartedAt = 0;
 unsigned long lastWiFiRetry = 0;
 unsigned long lastMQTTAttempt = 0;
@@ -170,7 +191,7 @@ unsigned long lastSensorRead = 0;
 unsigned long lightStartedAt = 0;
 unsigned long sequenceNumber = 0;
 const unsigned long OLED_SCREEN_INTERVAL_MS = 4000UL;
-const int OLED_SCREEN_COUNT = 4;
+const int OLED_SCREEN_COUNT = 3;
 int oledScreen = 0;
 unsigned long lastOLEDScreenChange = 0;
 const char* OFFLINE_QUEUE_PATH = "/offline_queue.jsonl";
@@ -185,229 +206,6 @@ char offlineBatch[OFFLINE_BATCH_CAPACITY];
 size_t offlineBatchLength = 0;
 unsigned long lastOfflineFlush = 0;
 unsigned long lastOfflineReplay = 0;
-bool soilCalibrationReady();
-int readSoilRaw();
-float soilPercentage(int raw);
-void setPlantRGB(bool r, bool g, bool b);
-// ========== WATERING SETTINGS ==========
-// XY-MOS: GPIO33 -> TRIG/PWM; common GND; external 5 V pump supply.
-const int PUMP_PIN = 33;
-const bool USE_FLOAT_SWITCH = false; // Without it: supervised testing only.
-const int FLOAT_PIN = 13; // Closed to GND = water available; open = empty/fault.
-const unsigned long WATER_PULSE_MS = 20000UL;
-const unsigned long WATER_SOAK_MS = 60000UL;
-const unsigned long WATER_SESSION_LIMIT_MS = 60000UL; // Three 20-second pulses, including manual tests.
-const int WATER_MAX_EPISODE_PULSES = 3;
-
-bool wateringAuto = true; // Automatically water when calibrated soil moisture is critical.
-bool pumpRunning = false;
-bool pumpAutomaticPulse = false;
-bool wateringDemand = false;
-bool wateringFault = false;
-bool wateringHasPulsed = false;
-int wateringDryCount = 0;
-int wateringEpisodePulses = 0;
-int wateringRaw = 0;
-bool wateringSampleReady = false;
-float wateringMoisture = NAN;
-unsigned long wateringSampleAt = 0;
-unsigned long wateringStoppedAt = 0;
-unsigned long wateringStartedAt = 0;
-unsigned long wateringUsedMs = 0;
-const char* wateringState = "AUTO ON";
-esp_timer_handle_t pumpSafetyTimer = nullptr;
-portMUX_TYPE pumpMux = portMUX_INITIALIZER_UNLOCKED;
-int64_t pumpDeadlineUs = 0; // Protected by pumpMux; callback never accesses MQTT/OLED.
-
-void pumpSafetyCallback(void*) {
-  portENTER_CRITICAL(&pumpMux);
-  if (pumpDeadlineUs != 0 && esp_timer_get_time() >= pumpDeadlineUs) {
-    gpio_set_level((gpio_num_t)PUMP_PIN, 0);
-    pumpDeadlineUs = 0;
-  }
-  portEXIT_CRITICAL(&pumpMux);
-}
-
-bool tankHasWater() {
-  return !USE_FLOAT_SWITCH || digitalRead(FLOAT_PIN) == LOW;
-}
-
-bool wateringCalibrationOK() {
-  return soilCalibrationReady() &&
-         abs(SOIL_DRY_RAW - SOIL_WET_RAW) >= 300;
-}
-
-bool wateringRawOK(int raw) {
-  // Rail readings can mean saturation, broken wire or disconnected sensor.
-  // An analog sensor cannot reliably diagnose every possible wiring failure.
-  return raw > 20 && raw < 4075;
-}
-
-void showWateringScreen() {
-  if (!oledReady) return;
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0); display.print("GreenPulse Watering");
-  display.setCursor(0, 12); display.print(wateringState);
-  display.setCursor(0, 24); display.print("Soil: ");
-  if (wateringCalibrationOK() && wateringRawOK(wateringRaw)) {
-    display.print(wateringMoisture, 0); display.print("%");
-  } else { display.print("CAL/ERR "); display.print(wateringRaw); }
-  display.setCursor(0, 36); display.print("Temp: ");
-  if (soilTempValid) { display.print(soilTemperatureC, 1); display.print("C"); }
-  else display.print("ERR");
-  display.setCursor(0, 48);
-  display.print(USE_FLOAT_SWITCH ? (tankHasWater() ? "Tank OK" : "TANK LOW") : "Tank: NOT MONITORED");
-  display.setCursor(0, 56); display.print("X:STOP  A:AUTO T:TEST");
-  display.display();
-}
-
-void stopWateringPump(const char* reason) {
-  portENTER_CRITICAL(&pumpMux);
-  pumpDeadlineUs = 0;
-  gpio_set_level((gpio_num_t)PUMP_PIN, 0);
-  portEXIT_CRITICAL(&pumpMux);
-  if (pumpRunning) {
-    wateringStoppedAt = millis();
-    wateringHasPulsed = true;
-  }
-  pumpRunning = false;
-  wateringState = reason;
-  Serial.print("Watering: "); Serial.println(reason);
-  showWateringScreen();
-}
-
-void lockWatering(const char* reason) {
-  wateringAuto = false;
-  wateringFault = true;
-  wateringDemand = false;
-  stopWateringPump(reason);
-  setPlantRGB(true, false, false);
-}
-
-bool startWateringPump(bool automaticPulse) {
-  if (!pumpSafetyTimer || pumpRunning || wateringFault) return false;
-  if (!tankHasWater()) { lockWatering("TANK LOW"); return false; }
-  if (wateringHasPulsed && millis() - wateringStoppedAt < WATER_SOAK_MS) {
-    Serial.println("Wait for the 60-second soak/cooldown."); return false;
-  }
-  if (wateringUsedMs + WATER_PULSE_MS > WATER_SESSION_LIMIT_MS) {
-    lockWatering("SESSION LIMIT"); return false;
-  }
-  wateringUsedMs += WATER_PULSE_MS; // Reserve full pulse, even if stopped early.
-  wateringStartedAt = millis();
-  pumpAutomaticPulse = automaticPulse;
-  pumpRunning = true;
-  if (automaticPulse) wateringEpisodePulses++;
-  portENTER_CRITICAL(&pumpMux);
-  pumpDeadlineUs = esp_timer_get_time() + (int64_t)WATER_PULSE_MS * 1000;
-  gpio_set_level((gpio_num_t)PUMP_PIN, 1);
-  portEXIT_CRITICAL(&pumpMux);
-  wateringState = automaticPulse ? "WATERING 20s" : "MANUAL TEST 20s";
-  Serial.print("Watering: "); Serial.println(wateringState);
-  showWateringScreen();
-  return true;
-}
-
-void setupWatering() {
-  digitalWrite(PUMP_PIN, LOW);
-  pinMode(PUMP_PIN, OUTPUT);
-  digitalWrite(PUMP_PIN, LOW);
-  if (USE_FLOAT_SWITCH) pinMode(FLOAT_PIN, INPUT_PULLUP);
-  esp_timer_create_args_t args = {};
-  args.callback = pumpSafetyCallback;
-  args.name = "pump_cutoff";
-  if (esp_timer_create(&args, &pumpSafetyTimer) != ESP_OK) {
-    pumpSafetyTimer = nullptr;
-    wateringFault = true;
-    wateringState = "TIMER ERROR";
-  } else if (esp_timer_start_periodic(pumpSafetyTimer, 10000) != ESP_OK) {
-    esp_timer_delete(pumpSafetyTimer);
-    pumpSafetyTimer = nullptr;
-    wateringFault = true;
-    wateringState = "TIMER ERROR";
-  }
-  Serial.println("Watering commands: A=arm auto, X=stop/disarm, T=20s manual, R=clear fault.");
-  Serial.println("Auto starts ON when soil calibration and sensor readings are valid.");
-}
-
-void serviceWatering() {
-  // First reconcile the independent cutoff, before processing new commands.
-  if (pumpRunning && millis() - wateringStartedAt >= WATER_PULSE_MS) {
-    stopWateringPump("SOAK 60s");
-  }
-  if (pumpRunning && !tankHasWater()) lockWatering("TANK LOW");
-  // One command per loop, so queued input cannot starve the pump service.
-  if (Serial.available()) {
-    char c = Serial.read();
-    if (c == 'X' || c == 'x') {
-      wateringAuto = false;
-      wateringDemand = false;
-      wateringDryCount = 0;
-      stopWateringPump("STOPPED / AUTO OFF");
-    } else if (c == 'R' || c == 'r') {
-      if (!pumpRunning && pumpSafetyTimer) {
-        wateringFault = false; wateringAuto = false; wateringDemand = false;
-        wateringEpisodePulses = 0; wateringDryCount = 0;
-        wateringState = "RESET / AUTO OFF";
-        Serial.println("Fault cleared. Budget and cooldown retained. Inspect before A or T.");
-      }
-    } else if (c == 'A' || c == 'a') {
-      if (wateringFault) Serial.println("Fault latched: inspect system, then R.");
-      else if (pumpRunning) Serial.println("Wait until the test ends.");
-      else if (!wateringCalibrationOK()) Serial.println("AUTO REFUSED: enter measured dry/wet calibration values at the top of the sketch.");
-      else if (!tankHasWater()) lockWatering("TANK LOW");
-      else {
-        wateringAuto = true; wateringDryCount = 0;
-        Serial.println("Auto armed. Valid soil moisture must be below the critical threshold.");
-      }
-    } else if (c == 'T' || c == 't') {
-      if (!pumpRunning) {
-        wateringAuto = false; wateringDemand = false;
-        wateringDryCount = 0;
-        startWateringPump(false);
-      }
-    }
-  }
-  if (wateringFault) return;
-  bool freshSample = millis() - wateringSampleAt >= 500UL;
-  if (freshSample) {
-    wateringRaw = readSoilRaw();
-    wateringSampleReady = true;
-    wateringMoisture = soilPercentage(wateringRaw);
-    wateringSampleAt = millis();
-  }
-  if (pumpRunning) {
-    if (pumpAutomaticPulse && freshSample && !wateringRawOK(wateringRaw)) {
-      lockWatering("SOIL SENSOR ERROR");
-    }
-    return;
-  }
-  if (!wateringAuto) {
-    wateringState = wateringCalibrationOK() ? "AUTO OFF" : "CALIBRATE / AUTO OFF";
-    return;
-  }
-  if (!tankHasWater()) { lockWatering("TANK LOW"); return; }
-  if (!wateringCalibrationOK()) { lockWatering("CALIBRATION ERROR"); return; }
-  if (!wateringSampleReady) { wateringState = "WAIT SOIL SAMPLE"; return; }
-  if (!wateringRawOK(wateringRaw)) { lockWatering("SOIL SENSOR ERROR"); return; }
-  if (wateringHasPulsed && millis() - wateringStoppedAt < WATER_SOAK_MS) {
-    wateringState = "SOAK 60s"; return;
-  }
-  if (!freshSample) return;
-  if (wateringMoisture >= SOIL_CRITICAL_BELOW) {
-    wateringDemand = false; wateringDryCount = 0; wateringEpisodePulses = 0;
-    wateringState = "SOIL NOT TOO DRY"; return;
-  }
-  wateringDryCount++;
-  wateringDemand = wateringDryCount >= 3;
-  if (!wateringDemand) { wateringState = "CONFIRMING DRY"; return; }
-  if (wateringEpisodePulses >= WATER_MAX_EPISODE_PULSES) {
-    lockWatering("EPISODE LIMIT"); return;
-  }
-  if (startWateringPump(true)) wateringDryCount = 0;
-}
 
 // ========== LED HELPERS ==========
 // Both modules must be common-cathode.
@@ -416,11 +214,13 @@ void setPlantRGB(bool r, bool g, bool b) {
   digitalWrite(PLANT_G, g ? HIGH : LOW);
   digitalWrite(PLANT_B, b ? HIGH : LOW);
 }
+
 void setNetworkRGB(bool r, bool g, bool b) {
   digitalWrite(NET_R, r ? HIGH : LOW);
   digitalWrite(NET_G, g ? HIGH : LOW);
   digitalWrite(NET_B, b ? HIGH : LOW);
 }
+
 void updatePlantLED(int status) {
   if (status == CRITICAL) {
     setPlantRGB(true, false, false);
@@ -430,25 +230,31 @@ void updatePlantLED(int status) {
     setPlantRGB(false, true, false);
   }
 }
+
 // ========== I2C / LIGHT SENSOR ==========
 bool deviceResponds(uint8_t address) {
   Wire.beginTransmission(address);
   return Wire.endTransmission() == 0;
 }
+
 bool startLightSensor() {
   if (!deviceResponds(LIGHT_ADDRESS)) {
     return false;
   }
+
   bool ok = lightMeter.begin(
     BH1750::CONTINUOUS_HIGH_RES_MODE,
     LIGHT_ADDRESS,
     &Wire
   );
+
   if (ok) {
     lightStartedAt = millis();
   }
+
   return ok;
 }
+
 // ========== DS18B20 SOIL TEMPERATURE ==========
 // One externally powered, three-wire DS18B20 on GPIO32.
 // Conversion runs asynchronously so its 750 ms wait does not block the loop.
@@ -475,6 +281,7 @@ void startSoilTemperatureConversion() {
   soilTempRequestedAt = millis();
   soilTempPending = true;
 }
+
 void serviceSoilTemperature() {
   unsigned long now = millis();
   if (soilTempPending &&
@@ -497,33 +304,42 @@ void serviceSoilTemperature() {
     startSoilTemperatureConversion();
   }
 }
+
 // ========== SOIL ==========
 int readSoilRaw() {
   long sum = 0;
+
   for (int i = 0; i < 10; i++) {
     sum += analogRead(SOIL_PIN);
     delay(2);
   }
+
   return sum / 10;
 }
+
 bool soilCalibrationReady() {
   return SOIL_DRY_RAW >= 0 && SOIL_DRY_RAW <= 4095 &&
          SOIL_WET_RAW >= 0 && SOIL_WET_RAW <= 4095 &&
          SOIL_DRY_RAW != SOIL_WET_RAW;
 }
+
 float soilPercentage(int raw) {
   if (!soilCalibrationReady()) {
     return NAN;
   }
+
   float value = 100.0f * (raw - SOIL_DRY_RAW) /
                 (SOIL_WET_RAW - SOIL_DRY_RAW);
+
   return constrain(value, 0.0f, 100.0f);
 }
+
 int evaluateSoil(float moisture) {
   if (moisture < SOIL_CRITICAL_BELOW || moisture > SOIL_WARNING_OVERWET) return CRITICAL;
   if (moisture < SOIL_WARNING_BELOW || moisture > 70.0f) return WARNING;
   return NORMAL;
 }
+
 int evaluateAir(float temperature, float humidity) {
   if (temperature < TEMP_WARNING_MIN ||
       temperature > TEMP_WARNING_MAX ||
@@ -531,26 +347,32 @@ int evaluateAir(float temperature, float humidity) {
       humidity > HUM_WARNING_MAX) {
     return CRITICAL;
   }
+
   if (temperature < TEMP_NORMAL_MIN ||
       temperature > TEMP_NORMAL_MAX ||
       humidity < HUM_NORMAL_MIN ||
       humidity > HUM_NORMAL_MAX) {
     return WARNING;
   }
+
   return NORMAL;
 }
+
 int evaluateSoilTemperature(float soilTempC) {
   if (isnan(soilTempC)) return CRITICAL;
   if (soilTempC < SOIL_TEMP_WARNING_MIN ||
       soilTempC > SOIL_TEMP_WARNING_MAX) {
     return CRITICAL;
   }
+
   if (soilTempC < SOIL_TEMP_NORMAL_MIN ||
       soilTempC > SOIL_TEMP_NORMAL_MAX) {
     return WARNING;
   }
+
   return NORMAL;
 }
+
 int evaluateLight(float lux) {
   if (lux < LIGHT_VERY_LOW_CRITICAL) return CRITICAL;
   if (lux < LIGHT_LOW_WARNING) return WARNING;
@@ -558,20 +380,25 @@ int evaluateLight(float lux) {
   if (lux <= LIGHT_NORMAL_MAX) return NORMAL;
   return WARNING; // Very bright; monitor only.
 }
+
 // ========== CONNECTION STATUS ==========
 const char* networkText() {
   if (WiFi.status() != WL_CONNECTED) {
     return "W:OFF";
   }
+
   if (!mqttConfigured) {
     return "W:ON";
   }
+
   return mqtt.connected() ? "M:ON" : "M:OFF";
 }
+
 void showStartupStatus(const char* statusText) {
   if (!oledReady) {
     return;
   }
+
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
@@ -582,19 +409,23 @@ void showStartupStatus(const char* statusText) {
   display.println(statusText);
   display.display();
 }
+
 void updateNetworkLED() {
   if (WiFi.status() != WL_CONNECTED) {
     bool initialAttempt =
       !wifiEverConnected &&
       millis() - wifiStartedAt < 30000UL;
+
     if (initialAttempt) {
       bool blink = (millis() / 500UL) % 2;
       setNetworkRGB(false, false, blink);
     } else {
       setNetworkRGB(true, false, false);
     }
+
     return;
   }
+
   if (!mqttConfigured) {
     setNetworkRGB(false, false, true);
   } else if (mqtt.connected()) {
@@ -605,6 +436,7 @@ void updateNetworkLED() {
     setNetworkRGB(false, false, true);
   }
 }
+
 // Print incoming AI messages using the supplied payload length.
 void onMQTTMessage(char* topic, byte* payload, unsigned int length) {
   Serial.print("MQTT received [");
@@ -613,15 +445,18 @@ void onMQTTMessage(char* topic, byte* payload, unsigned int length) {
   Serial.write(payload, length);
   Serial.println();
 }
+
 bool flushOfflineBatch() {
   if (!offlineQueueReady || offlineBatchLength == 0) {
     return offlineBatchLength == 0;
   }
+
   File queueFile = LittleFS.open(OFFLINE_QUEUE_PATH, FILE_APPEND);
   if (!queueFile) {
     Serial.println("Could not open offline queue for writing.");
     return false;
   }
+
   size_t queueSize = queueFile.size();
   if (queueSize + offlineBatchLength > OFFLINE_QUEUE_MAX_BYTES) {
     queueFile.close();
@@ -629,44 +464,53 @@ bool flushOfflineBatch() {
     Serial.println("Offline queue full; dropping newest buffered readings.");
     return false;
   }
+
   size_t bytesWritten = queueFile.write(
     reinterpret_cast<const uint8_t*>(offlineBatch), offlineBatchLength
   );
   queueFile.close();
+
   if (bytesWritten != offlineBatchLength) {
     offlineBatchLength = 0;
     Serial.println("Offline queue write incomplete; buffered readings lost.");
     return false;
   }
+
   offlineBatchLength = 0;
   offlineQueuePending = true;
   lastOfflineFlush = millis();
   return true;
 }
+
 bool queueOfflinePayload(const char* payload) {
   if (!offlineQueueReady) {
     return false;
   }
+
   size_t payloadLength = strlen(payload);
   size_t recordLength = payloadLength + 1;
   if (recordLength > OFFLINE_BATCH_CAPACITY) {
     Serial.println("Sensor payload too large for offline queue.");
     return false;
   }
+
   if (offlineBatchLength + recordLength > OFFLINE_BATCH_CAPACITY) {
     if (!flushOfflineBatch()) {
       return false;
     }
   }
+
   memcpy(offlineBatch + offlineBatchLength, payload, payloadLength);
   offlineBatchLength += payloadLength;
   offlineBatch[offlineBatchLength++] = '\n';
   return true;
 }
+
 void serviceOfflineQueue() {
   if (!offlineQueueReady || !mqtt.connected()) {
     return;
   }
+
   if (offlineBatchLength > 0 &&
       (!offlineQueuePending ||
        millis() - lastOfflineFlush >= OFFLINE_BATCH_FLUSH_INTERVAL_MS)) {
@@ -674,16 +518,19 @@ void serviceOfflineQueue() {
       return;
     }
   }
+
   if (!offlineQueuePending ||
       millis() - lastOfflineReplay < OFFLINE_REPLAY_INTERVAL_MS) {
     return;
   }
   lastOfflineReplay = millis();
+
   File queueFile = LittleFS.open(OFFLINE_QUEUE_PATH, FILE_READ);
   if (!queueFile) {
     Serial.println("Could not open offline queue for replay.");
     return;
   }
+
   size_t queueSize = queueFile.size();
   if (offlineReplayOffset >= queueSize) {
     queueFile.close();
@@ -693,76 +540,96 @@ void serviceOfflineQueue() {
     Serial.println("Offline queue replay complete.");
     return;
   }
+
   if (!queueFile.seek(offlineReplayOffset)) {
     queueFile.close();
     Serial.println("Could not seek in offline queue.");
     return;
   }
+
   String queuedPayload = queueFile.readStringUntil('\n');
   size_t nextOffset = queueFile.position();
   queueFile.close();
-  if (queuedPayload.length() == 0 || queuedPayload.length() >= 1024) {
+
+  if (queuedPayload.length() == 0 || queuedPayload.length() >= 512) {
     Serial.println("Invalid offline queue record; skipping it.");
     offlineReplayOffset = nextOffset;
     return;
   }
-  StaticJsonDocument<1024> queuedDocument;
+
+  StaticJsonDocument<512> queuedDocument;
   if (deserializeJson(queuedDocument, queuedPayload) ||
       !queuedDocument.is<JsonObject>()) {
     Serial.println("Malformed offline JSON record; skipping it.");
     offlineReplayOffset = nextOffset;
     return;
   }
+
   if (!mqtt.publish("greenpulse/sensors", queuedPayload.c_str())) {
     Serial.println("Offline queue publish failed; will retry.");
     return;
   }
+
   offlineReplayOffset = nextOffset;
   Serial.println("Replayed one offline sensor reading.");
 }
+
 void serviceNetwork() {
   unsigned long now = millis();
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
+
   if (!wifiConnected) {
     if (wifiWasConnected) {
       Serial.println("Wi-Fi connection lost.");
       secureClient.stop();
       wifiWasConnected = false;
     }
+
     if (now - lastWiFiRetry >= 15000UL) {
       lastWiFiRetry = now;
       WiFi.reconnect();
     }
+
     updateNetworkLED();
     return;
   }
+
   if (!wifiWasConnected) {
     wifiWasConnected = true;
     wifiEverConnected = true;
+
     Serial.print("Wi-Fi connected. IP: ");
     Serial.println(WiFi.localIP());
+
     if (mqttConfigured) {
       // TLS certificate checks require a valid clock.
       configTime(0, 0, "pool.ntp.org", "time.nist.gov");
       Serial.println("Waiting for network time for TLS.");
     }
   }
+
   if (!mqttConfigured) {
     updateNetworkLED();
     return;
   }
+
   if (mqtt.connected()) {
     mqtt.loop();
   }
+
   // Wait for time synchronization before TLS.
   bool clockReady = time(nullptr) > 1700000000;
+
   if (!mqtt.connected() && clockReady &&
       (!mqttAttempted ||
        now - lastMQTTAttempt >= 15000UL)) {
+
     lastMQTTAttempt = now;
     mqttAttempted = true;
+
     updateNetworkLED();
     Serial.println("Connecting to AWS MQTT...");
+
     // This call can briefly block during a connection attempt.
     if (mqtt.connect(MQTT_CLIENT_ID)) {
       mqttEverConnected = true;
@@ -781,9 +648,11 @@ void serviceNetwork() {
       Serial.println(mqtt.state());
     }
   }
+
   serviceOfflineQueue();
   updateNetworkLED();
 }
+
 // ========== READ AND DISPLAY SENSORS ==========
 void updateSensors() {
   bool soilTempOK = soilTempValid &&
@@ -791,33 +660,44 @@ void updateSensors() {
   int soilRaw = readSoilRaw();
   bool soilCalibrated = soilCalibrationReady();
   float soilPercent = soilPercentage(soilRaw);
+
   float humidity = dht.readHumidity();
   float temperature = dht.readTemperature();
+
   bool dhtOK =
     !isnan(humidity) && !isnan(temperature) &&
     humidity >= 0 && humidity <= 100 &&
     temperature >= -40 && temperature <= 80;
+
   if (!lightReady) {
     lightReady = startLightSensor();
   }
+
   float lux = -1;
+
   // Allow a measurement after (re)initialization.
   if (lightReady && millis() - lightStartedAt >= 200UL) {
     lux = lightMeter.readLightLevel();
+
     if (isnan(lux) || lux < 0) {
       lightReady = false;
     }
   }
+
   bool lightOK = !isnan(lux) && lux >= 0;
+
   int overallStatus = NORMAL;
   const char* message = "NORMAL";
+
   if (!dhtOK || !lightOK) {
     overallStatus = CRITICAL;
+
     if (!dhtOK && !lightOK) message = "SENSOR ERROR";
     else if (!dhtOK) message = "DHT22 ERROR";
     else message = "BH1750 ERROR";
   } else {
     int airStatus = evaluateAir(temperature, humidity);
+
     if (!soilCalibrated) {
       overallStatus = airStatus == CRITICAL ? CRITICAL : WARNING;
       message = airStatus == CRITICAL
@@ -826,21 +706,23 @@ void updateSensors() {
       int soilStatus = evaluateSoil(soilPercent);
       overallStatus = soilStatus > airStatus
                         ? soilStatus : airStatus;
+
       if (soilStatus == CRITICAL && airStatus == CRITICAL) {
         message = "AIR + SOIL CRITICAL";
       } else if (soilStatus == CRITICAL) {
-        message = soilPercent > SOIL_WARNING_OVERWET ? "SOIL TOO WET" : "SOIL VERY DRY";
+        message = "SOIL VERY DRY";
       } else if (airStatus == CRITICAL) {
         message = "AIR CRITICAL";
       } else if (soilStatus == WARNING && airStatus == WARNING) {
         message = "AIR + SOIL WARNING";
       } else if (soilStatus == WARNING) {
-        message = soilPercent > 70.0f ? "SOIL WET" : "SOIL DRY";
+        message = "SOIL DRY";
       } else if (airStatus == WARNING) {
         message = "AIR WARNING";
       }
     }
   }
+
   // Check the soil temperature against chili-plant thresholds.
   int soilTempStatus = soilTempOK ? evaluateSoilTemperature(soilTemperatureC) : CRITICAL;
   if (soilTempStatus == CRITICAL) {
@@ -852,6 +734,7 @@ void updateSensors() {
       message = "SOIL TEMP WARNING";
     }
   }
+
   if (lightOK) {
     int lightStatus = evaluateLight(lux);
     if (lightStatus == CRITICAL) {
@@ -874,13 +757,16 @@ void updateSensors() {
       }
     }
   }
+
   const char* systemMessages[8];
   int systemMessageCount = 0;
+
   auto addSystemMessage = [&](const char* text) {
     if (systemMessageCount < 8) {
       systemMessages[systemMessageCount++] = text;
     }
   };
+
   if (!dhtOK) {
     addSystemMessage("CRIT: DHT SENSOR");
   } else {
@@ -889,12 +775,14 @@ void updateSensors() {
     } else if (temperature < TEMP_NORMAL_MIN || temperature > TEMP_NORMAL_MAX) {
       addSystemMessage("WARN: AIR TEMP");
     }
+
     if (humidity < HUM_WARNING_MIN || humidity > HUM_WARNING_MAX) {
       addSystemMessage("CRIT: HUMIDITY");
     } else if (humidity < HUM_NORMAL_MIN || humidity > HUM_NORMAL_MAX) {
       addSystemMessage("WARN: HUMIDITY");
     }
   }
+
   if (!soilCalibrated) {
     addSystemMessage("WARN: SOIL CALIBRATE");
   } else if (soilPercent < SOIL_CRITICAL_BELOW) {
@@ -906,6 +794,7 @@ void updateSensors() {
   } else if (soilPercent > 70.0f) {
     addSystemMessage("WARN: SOIL WET");
   }
+
   if (!soilTempOK) {
     addSystemMessage("CRIT: SOIL TEMP ERR");
   } else if (soilTemperatureC < SOIL_TEMP_WARNING_MIN ||
@@ -915,6 +804,7 @@ void updateSensors() {
              soilTemperatureC > SOIL_TEMP_NORMAL_MAX) {
     addSystemMessage("WARN: SOIL TEMP");
   }
+
   if (!lightOK) {
     addSystemMessage("CRIT: LIGHT SENSOR");
   } else if (lux < LIGHT_VERY_LOW_CRITICAL) {
@@ -924,43 +814,51 @@ void updateSensors() {
   } else if (lux > LIGHT_NORMAL_MAX) {
     addSystemMessage("WARN: HIGH LIGHT");
   }
+
   if (systemMessageCount == 0) {
     addSystemMessage("All readings normal");
   }
-  if (wateringFault) { overallStatus = CRITICAL; addSystemMessage(wateringState); }
+
   updatePlantLED(overallStatus);
+
   Serial.print("Temp: ");
   if (dhtOK) Serial.print(temperature, 1);
   else Serial.print("ERROR");
+
   Serial.print(" C | Humidity: ");
   if (dhtOK) Serial.print(humidity, 1);
   else Serial.print("ERROR");
+
   Serial.print(" % | Light: ");
   if (lightOK) Serial.print(lux, 1);
   else Serial.print("ERROR");
+
   Serial.print(" lx | Soil raw: ");
   Serial.print(soilRaw);
   Serial.print(" | Soil: ");
+
   if (soilCalibrated) {
     Serial.print(soilPercent, 1);
-    Serial.print("% relative");
+    Serial.print(SOIL_DEMO_CALIBRATION ? "% DEMO" : "% relative");
   } else {
     Serial.print("Not calibrated");
   }
+
   Serial.print(" | Soil temp: ");
   if (soilTempOK) Serial.print(soilTemperatureC, 1);
   else Serial.print("ERROR");
   Serial.print(" C | ");
   Serial.print(message);
   Serial.print(" | ");
-  Serial.print(networkText());
-  Serial.print(" | Watering: "); Serial.println(wateringState);
+  Serial.println(networkText());
+
   // JSON and Serial output continue even if the OLED is unavailable.
   if (oledReady) {
     if (millis() - lastOLEDScreenChange >= OLED_SCREEN_INTERVAL_MS) {
       lastOLEDScreenChange = millis();
       oledScreen = (oledScreen + 1) % OLED_SCREEN_COUNT;
     }
+
     display.clearDisplay();
     display.setTextSize(1);
     const char* screenTitle;
@@ -968,31 +866,34 @@ void updateSensors() {
       screenTitle = "Network";
     } else if (oledScreen == 1) {
       screenTitle = "Sensor readings";
-    } else if (oledScreen == 3) {
-      screenTitle = "Watering";
     } else {
       if (overallStatus == CRITICAL) screenTitle = "System: CRITICAL";
       else if (overallStatus == WARNING) screenTitle = "System: WARNING";
       else screenTitle = "System: NORMAL";
     }
+
     display.fillRect(0, 0, 128, 10, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
     int titleX = (128 - (strlen(screenTitle) * 6)) / 2;
     display.setCursor(titleX, 1);
     display.print(screenTitle);
     display.setTextColor(SSD1306_WHITE);
+
     if (oledScreen == 0) {
       display.setCursor(0, 12);
       display.print("WiFi: ");
       display.print(WiFi.status() == WL_CONNECTED ? "ON" : "OFF");
+
       display.setCursor(0, 26);
       display.print("MQTT: ");
       if (!mqttConfigured) display.print("DISABLED");
       else display.print(mqtt.connected() ? "ON" : "OFF");
+
       display.setCursor(0, 40);
       display.print("IP: ");
       if (WiFi.status() == WL_CONNECTED) display.print(WiFi.localIP());
       else display.print("--");
+
       display.setCursor(0, 54);
       display.print("RSSI: ");
       if (WiFi.status() == WL_CONNECTED) display.print(WiFi.RSSI());
@@ -1002,10 +903,12 @@ void updateSensors() {
       display.print("Air temp: ");
       if (dhtOK) { display.print(temperature, 1); display.print("C"); }
       else display.print("ERR");
+
       display.setCursor(0, 22);
       display.print("Humidity: ");
       if (dhtOK) { display.print(humidity, 0); display.print("%"); }
       else display.print("ERR");
+
       display.setCursor(0, 32);
       display.print("Soil: ");
       if (soilCalibrated) {
@@ -1016,26 +919,22 @@ void updateSensors() {
         display.print("CAL ");
         display.print(soilRaw);
       }
+
       display.setCursor(0, 42);
       display.print("Soil temp: ");
       if (soilTempOK) { display.print(soilTemperatureC, 1); display.print("C"); }
       else display.print("ERR");
+
       display.setCursor(0, 52);
       display.print("Light: ");
       if (lightOK) { display.print(lux, 0); display.print(" lx"); }
       else display.print("ERR");
-    } else if (oledScreen == 3) {
-      display.setCursor(0, 12); display.print(wateringState);
-      display.setCursor(0, 24); display.print(wateringAuto ? "Auto: ARMED" : "Auto: OFF");
-      display.setCursor(0, 36); display.print("Used: ");
-      display.print(wateringUsedMs / 1000); display.print("/30s this boot");
-      display.setCursor(0, 48); display.print(USE_FLOAT_SWITCH ? (tankHasWater() ? "Tank OK" : "TANK LOW") : "NO TANK SENSOR");
-      display.setCursor(0, 56); display.print("A:AUTO X:STOP T:TEST");
     } else {
       int firstMessage = 0;
       if (systemMessageCount > 5) {
         firstMessage = (millis() / 2000UL) % (systemMessageCount - 4);
       }
+
       for (int row = 0; row < 5; row++) {
         int messageIndex = firstMessage + row;
         if (messageIndex >= systemMessageCount) break;
@@ -1043,14 +942,18 @@ void updateSensors() {
         display.print(systemMessages[messageIndex]);
       }
     }
+
     display.display();
   }
+
   // ==========================================
   // BUILD AND PUBLISH THE JSON PAYLOAD
   // ==========================================
-  StaticJsonDocument<1024> doc;
+  
+  StaticJsonDocument<512> doc;
   doc["device_id"] = MQTT_CLIENT_ID;
   doc["sequence_number"] = ++sequenceNumber;
+
   if (soilCalibrated) {
     doc["soil_moisture"] = soilPercent;
   }
@@ -1061,26 +964,23 @@ void updateSensors() {
   if (lightOK) {
     doc["light_intensity"] = lux;
   }
+
   // A missing temperature is null, never a false zero or -127 reading.
   if (soilTempOK) doc["soil_temperature"] = soilTemperatureC;
   else doc["soil_temperature"] = nullptr;
   doc["soil_temperature_ok"] = soilTempOK;
-  doc["soil_calibrated"] = wateringCalibrationOK();
-  doc["watering_auto"] = wateringAuto;
-  doc["watering_status"] = wateringState;
-  doc["watering_used_ms"] = wateringUsedMs;
-  doc["tank_monitored"] = USE_FLOAT_SWITCH;
-  // Pump-active publishing is deferred; this describes state at sample time.
-  doc["pump_command_on"] = pumpRunning;
-  char jsonString[1024];
+
+  char jsonString[512];
   if (doc.overflowed() || measureJson(doc) >= sizeof(jsonString)) {
     Serial.println("Sensor JSON exceeds buffer capacity; skipping payload.");
     return;
   }
   serializeJson(doc, jsonString, sizeof(jsonString));
+
   Serial.println("\n--- Generated JSON Payload ---");
   Serial.println(jsonString);
   Serial.println("------------------------------\n");
+
   if (offlineQueuePending || offlineBatchLength > 0 || !mqtt.connected()) {
     if (!queueOfflinePayload(jsonString)) {
       Serial.println("Could not save sensor payload to offline queue.");
@@ -1092,10 +992,11 @@ void updateSensors() {
     }
   }
 }
+
 // ========== SETUP ==========
 void setup() {
   Serial.begin(115200);
-  setupWatering();
+
   offlineQueueReady = LittleFS.begin(true);
   if (offlineQueueReady) {
     if (LittleFS.exists(OFFLINE_QUEUE_PATH)) {
@@ -1110,28 +1011,34 @@ void setup() {
     Serial.println("LittleFS unavailable; offline readings will not be saved.");
   }
   lastOfflineFlush = millis();
+
   pinMode(PLANT_R, OUTPUT);
   pinMode(PLANT_G, OUTPUT);
   pinMode(PLANT_B, OUTPUT);
   pinMode(NET_R, OUTPUT);
   pinMode(NET_G, OUTPUT);
   pinMode(NET_B, OUTPUT);
+
   setPlantRGB(false, false, false);
   setNetworkRGB(false, false, false);
+
   pinMode(SOIL_PIN, INPUT);
   analogReadResolution(12);
   analogSetPinAttenuation(SOIL_PIN, ADC_11db);
+
   Wire.begin(21, 22);
-  Wire.setTimeOut(50);
   delay(200);
+
   uint8_t oledAddress = 0;
   if (deviceResponds(0x3C)) oledAddress = 0x3C;
   else if (deviceResponds(0x3D)) oledAddress = 0x3D;
+
   if (oledAddress != 0) {
     oledReady = display.begin(
       SSD1306_SWITCHCAPVCC, oledAddress, false, false
     );
   }
+
   if (oledReady) {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
@@ -1144,22 +1051,26 @@ void setup() {
     display.display();
     lastOLEDScreenChange = millis();
   }
+
   dht.begin();
   startSoilTemperatureConversion();
   lightReady = startLightSensor();
+
   mqttConfigured =
     ENABLE_MQTT &&
     strlen(MQTT_HOST) > 0 &&
     strstr(ROOT_CA, "-----BEGIN CERTIFICATE-----") != nullptr &&
     strstr(DEVICE_CERT, "-----BEGIN CERTIFICATE-----") != nullptr &&
     strstr(PRIVATE_KEY, "PRIVATE KEY-----") != nullptr;
+
   if (mqttConfigured) {
     secureClient.setCACert(ROOT_CA);
     secureClient.setCertificate(DEVICE_CERT);
     secureClient.setPrivateKey(PRIVATE_KEY);
     secureClient.setHandshakeTimeout(5);
+
     // Allow room for the sensor JSON plus the MQTT topic and packet header.
-    if (!mqtt.setBufferSize(1536)) {
+    if (!mqtt.setBufferSize(1024)) {
       mqttConfigured = false;
       Serial.println("MQTT buffer allocation failed. Wi-Fi-only mode.");
     }
@@ -1172,30 +1083,34 @@ void setup() {
       "MQTT disabled or settings incomplete. Wi-Fi-only mode."
     );
   }
+
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
   wifiStartedAt = millis();
   lastWiFiRetry = millis();
   lastSensorRead = millis();
+
   Serial.println("Connecting to Wi-Fi...");
 }
+
 // ========== LOOP ==========
 void loop() {
   serviceSoilTemperature();
-  serviceWatering();
-  // Keep network/TLS, flash writes and full display/sensor updates out of pulses.
-  // Independent timer also cuts power if this loop is delayed.
-  if (pumpRunning) { delay(2); return; }
   serviceNetwork();
   serviceSoilTemperature();
+
   if (offlineBatchLength > 0 &&
       millis() - lastOfflineFlush >= OFFLINE_BATCH_FLUSH_INTERVAL_MS) {
     flushOfflineBatch();
   }
+
+  // Timed sensor updates keep the connection LED responsive.
   if (millis() - lastSensorRead >= 2500UL) {
     lastSensorRead = millis();
     updateSensors();
   }
+
   delay(5);
 }
