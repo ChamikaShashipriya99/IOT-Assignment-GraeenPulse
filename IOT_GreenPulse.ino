@@ -229,7 +229,7 @@ unsigned long lastSensorRead = 0;
 unsigned long lightStartedAt = 0;
 unsigned long sequenceNumber = 0;
 const unsigned long OLED_SCREEN_INTERVAL_MS = 4000UL;
-const int OLED_SCREEN_COUNT = 3;
+const int OLED_SCREEN_COUNT = 4;
 int oledScreen = 0;
 unsigned long lastOLEDScreenChange = 0;
 const char* OFFLINE_QUEUE_PATH = "/offline_queue.jsonl";
@@ -1012,6 +1012,8 @@ void updateSensors() {
       screenTitle = "Network";
     } else if (oledScreen == 1) {
       screenTitle = "Sensor readings";
+    } else if (oledScreen == 2) {
+      screenTitle = "Watering";
     } else {
       if (overallStatus == CRITICAL) screenTitle = "System: CRITICAL";
       else if (overallStatus == WARNING) screenTitle = "System: WARNING";
@@ -1075,6 +1077,33 @@ void updateSensors() {
       display.print("Light: ");
       if (lightOK) { display.print(lux, 0); display.print(" lx"); }
       else display.print("ERR");
+    } else if (oledScreen == 2) {
+      display.setCursor(0, 14);
+      display.print("Soil: ");
+      if (soilCalibrated) {
+        display.print(soilPercent, 1);
+        display.print("%");
+      } else {
+        display.print("CALIBRATE");
+      }
+
+      display.setCursor(0, 28);
+      display.print("Pump: ");
+      display.print(pumpRunning ? "ON" : "OFF");
+
+      display.setCursor(0, 42);
+      display.print(wateringStatus);
+
+      if (pumpRunning) {
+        unsigned long elapsed = millis() - pumpStartedAt;
+        unsigned long remaining = elapsed >= pumpRunMs
+                                   ? 0
+                                   : (pumpRunMs - elapsed + 999UL) / 1000UL;
+        display.setCursor(0, 54);
+        display.print("Time left: ");
+        display.print(remaining);
+        display.print("s");
+      }
     } else {
       int firstMessage = 0;
       if (systemMessageCount > 5) {
