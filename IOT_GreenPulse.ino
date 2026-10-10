@@ -1,3 +1,6 @@
+#include <Arduino.h>
+#include <esp_timer.h>
+#include <driver/gpio.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -118,12 +121,10 @@ const int NET_R = 18;
 const int NET_G = 19;
 const int NET_B = 23;
 
-// ========== SAMPLE SOIL CALIBRATION ==========
-// DEMONSTRATION VALUES ONLY.
-// Replace with actual dry and watered-and-drained readings.
-const int SOIL_DRY_RAW = 4095;
+// ========== SOIL CALIBRATION ==========
+// Calibrated raw ADC endpoints: dry soil and watered-and-drained soil.
+const int SOIL_DRY_RAW = 4000;
 const int SOIL_WET_RAW = 1500;
-const bool SOIL_DEMO_CALIBRATION = true;
 
 // Real-world thresholds for a chili plant.
 const float SOIL_CRITICAL_BELOW = 30.0;
@@ -153,6 +154,40 @@ const float LIGHT_NORMAL_MAX = 40000.0;
 const int NORMAL = 0;
 const int WARNING = 1;
 const int CRITICAL = 2;
+
+// ========== AUTOMATIC WATERING ==========
+// GPIO33 drives module TRIG/PWM; power the pump from the external 5 V supply.
+const int PUMP_PIN = 33;
+const int PUMP_ON_LEVEL = HIGH;   // Swap ON/OFF levels if the module trigger is active-low.
+const int PUMP_OFF_LEVEL = LOW;
+const unsigned long PUMP_RUN_MS = 20000UL;
+const unsigned long PUMP_SOAK_MS = 60000UL;
+const int DRY_CONFIRMATION_SAMPLES = 3;
+const int MAX_PULSES_PER_DRY_EPISODE = 3;
+
+int latestSoilRaw = 0;
+float latestSoilPercent = NAN;
+bool latestSoilSampleReady = false;
+bool newSoilSample = false;
+bool pumpRunning = false;
+bool pumpTimerReady = false;
+int dryConfirmationCount = 0;
+int pulsesThisDryEpisode = 0;
+unsigned long pumpStartedAt = 0;
+unsigned long pumpStoppedAt = 0;
+const char* wateringStatus = "WAIT SOIL SAMPLE";
+esp_timer_handle_t pumpSafetyTimer = nullptr;
+portMUX_TYPE pumpMux = portMUX_INITIALIZER_UNLOCKED;
+int64_t pumpDeadlineUs = 0;
+
+void pumpSafetyCallback(void*) {
+  portENTER_CRITICAL(&pumpMux);
+  if (pumpDeadlineUs != 0 && esp_timer_get_time() >= pumpDeadlineUs) {
+    gpio_set_level((gpio_num_t)PUMP_PIN, PUMP_OFF_LEVEL);
+    pumpDeadlineUs = 0;
+  }
+  portEXIT_CRITICAL(&pumpMux);
+}
 
 // ========== DEVICES ==========
 DHT dht(DHT_PIN, DHT_TYPE);
@@ -318,9 +353,9 @@ int readSoilRaw() {
 }
 
 bool soilCalibrationReady() {
-  return SOIL_DRY_RAW >= 0 && SOIL_DRY_RAW <= 4095 &&
-         SOIL_WET_RAW >= 0 && SOIL_WET_RAW <= 4095 &&
-         SOIL_DRY_RAW != SOIL_WET_RAW;
+  return SOIL_DRY_RAW > 20 && SOIL_DRY_RAW < 4075 &&
+         SOIL_WET_RAW > 20 && SOIL_WET_RAW < 4075 &&
+         abs(SOIL_DRY_RAW - SOIL_WET_RAW) >= 300;
 }
 
 float soilPercentage(int raw) {
@@ -332,6 +367,97 @@ float soilPercentage(int raw) {
                 (SOIL_WET_RAW - SOIL_DRY_RAW);
 
   return constrain(value, 0.0f, 100.0f);
+}
+
+bool soilRawIsValid(int raw) {
+  if (raw <= 20 || raw > 4095) return false;
+  if (raw < 4075) return true;
+
+  // Accept readings near the calibrated dry endpoint at the ADC high rail.
+  // For this calibration, 4095 maps to 0% rather than being discarded.
+  if (SOIL_DRY_RAW <= SOIL_WET_RAW) return false;
+  int dryRailTolerance = abs(SOIL_DRY_RAW - SOIL_WET_RAW) / 20;
+  if (dryRailTolerance < 100) dryRailTolerance = 100;
+  return raw >= SOIL_DRY_RAW &&
+         raw - SOIL_DRY_RAW <= dryRailTolerance;
+}
+
+void startPumpPulse() {
+  if (!pumpTimerReady || pumpRunning) return;
+
+  pumpStartedAt = millis();
+  pumpRunning = true;
+  pulsesThisDryEpisode++;
+  portENTER_CRITICAL(&pumpMux);
+  pumpDeadlineUs = esp_timer_get_time() + (int64_t)PUMP_RUN_MS * 1000;
+  gpio_set_level((gpio_num_t)PUMP_PIN, PUMP_ON_LEVEL);
+  portEXIT_CRITICAL(&pumpMux);
+
+  wateringStatus = "PUMP ON 20s";
+  Serial.println("Watering: pump ON for 20 seconds.");
+}
+
+void stopPumpPulse() {
+  portENTER_CRITICAL(&pumpMux);
+  pumpDeadlineUs = 0;
+  gpio_set_level((gpio_num_t)PUMP_PIN, PUMP_OFF_LEVEL);
+  portEXIT_CRITICAL(&pumpMux);
+
+  pumpRunning = false;
+  pumpStoppedAt = millis();
+  wateringStatus = "SOAK 60s";
+  Serial.println("Watering: pump OFF; waiting 60 seconds before recheck.");
+}
+
+void serviceAutomaticWatering() {
+  if (pumpRunning && millis() - pumpStartedAt >= PUMP_RUN_MS) {
+    stopPumpPulse();
+  }
+
+  if (!newSoilSample) return;
+  newSoilSample = false;
+
+  if (pumpRunning) {
+    wateringStatus = "PUMP ON 20s";
+    return;
+  }
+  if (!pumpTimerReady) {
+    wateringStatus = "PUMP TIMER ERROR";
+    return;
+  }
+  if (!soilCalibrationReady()) {
+    dryConfirmationCount = 0;
+    wateringStatus = "CALIBRATE SOIL";
+    return;
+  }
+  if (!latestSoilSampleReady || !soilRawIsValid(latestSoilRaw)) {
+    dryConfirmationCount = 0;
+    wateringStatus = "SOIL SENSOR ERROR";
+    return;
+  }
+  if (latestSoilPercent >= SOIL_CRITICAL_BELOW) {
+    dryConfirmationCount = 0;
+    pulsesThisDryEpisode = 0;
+    wateringStatus = "SOIL OK";
+    return;
+  }
+  if (pulsesThisDryEpisode >= MAX_PULSES_PER_DRY_EPISODE) {
+    wateringStatus = "PULSE LIMIT";
+    return;
+  }
+  if (pumpStoppedAt != 0 && millis() - pumpStoppedAt < PUMP_SOAK_MS) {
+    wateringStatus = "SOAK 60s";
+    return;
+  }
+
+  dryConfirmationCount++;
+  if (dryConfirmationCount < DRY_CONFIRMATION_SAMPLES) {
+    wateringStatus = "CONFIRMING DRY";
+    return;
+  }
+
+  dryConfirmationCount = 0;
+  startPumpPulse();
 }
 
 int evaluateSoil(float moisture) {
@@ -660,6 +786,11 @@ void updateSensors() {
   int soilRaw = readSoilRaw();
   bool soilCalibrated = soilCalibrationReady();
   float soilPercent = soilPercentage(soilRaw);
+  latestSoilRaw = soilRaw;
+  latestSoilPercent = soilPercent;
+  latestSoilSampleReady = soilCalibrated;
+  newSoilSample = true;
+  serviceAutomaticWatering();
 
   float humidity = dht.readHumidity();
   float temperature = dht.readTemperature();
@@ -839,7 +970,7 @@ void updateSensors() {
 
   if (soilCalibrated) {
     Serial.print(soilPercent, 1);
-    Serial.print(SOIL_DEMO_CALIBRATION ? "% DEMO" : "% relative");
+    Serial.print("% relative");
   } else {
     Serial.print("Not calibrated");
   }
@@ -850,7 +981,9 @@ void updateSensors() {
   Serial.print(" C | ");
   Serial.print(message);
   Serial.print(" | ");
-  Serial.println(networkText());
+  Serial.print(networkText());
+  Serial.print(" | Watering: ");
+  Serial.println(wateringStatus);
 
   // JSON and Serial output continue even if the OLED is unavailable.
   if (oledReady) {
@@ -969,6 +1102,10 @@ void updateSensors() {
   if (soilTempOK) doc["soil_temperature"] = soilTemperatureC;
   else doc["soil_temperature"] = nullptr;
   doc["soil_temperature_ok"] = soilTempOK;
+  doc["soil_calibrated"] = soilCalibrated;
+  doc["watering_auto"] = soilCalibrated && pumpTimerReady;
+  doc["watering_status"] = wateringStatus;
+  doc["pump_command_on"] = pumpRunning;
 
   char jsonString[512];
   if (doc.overflowed() || measureJson(doc) >= sizeof(jsonString)) {
@@ -996,6 +1133,24 @@ void updateSensors() {
 // ========== SETUP ==========
 void setup() {
   Serial.begin(115200);
+
+  pinMode(PUMP_PIN, OUTPUT);
+  digitalWrite(PUMP_PIN, PUMP_OFF_LEVEL);
+  esp_timer_create_args_t pumpTimerArgs = {};
+  pumpTimerArgs.callback = pumpSafetyCallback;
+  pumpTimerArgs.name = "pump_cutoff";
+  if (esp_timer_create(&pumpTimerArgs, &pumpSafetyTimer) != ESP_OK) {
+    wateringStatus = "PUMP TIMER ERROR";
+  } else if (esp_timer_start_periodic(pumpSafetyTimer, 10000) != ESP_OK) {
+    esp_timer_delete(pumpSafetyTimer);
+    pumpSafetyTimer = nullptr;
+    wateringStatus = "PUMP TIMER ERROR";
+  } else {
+    pumpTimerReady = true;
+  }
+
+  Serial.println("Automatic watering: GPIO33; critical soil moisture; 20-second pump pulse.");
+  Serial.println("Enter measured soil calibration values before automatic watering can run.");
 
   offlineQueueReady = LittleFS.begin(true);
   if (offlineQueueReady) {
@@ -1097,6 +1252,7 @@ void setup() {
 
 // ========== LOOP ==========
 void loop() {
+  serviceAutomaticWatering();
   serviceSoilTemperature();
   serviceNetwork();
   serviceSoilTemperature();
@@ -1110,6 +1266,7 @@ void loop() {
   if (millis() - lastSensorRead >= 2500UL) {
     lastSensorRead = millis();
     updateSensors();
+    serviceAutomaticWatering();
   }
 
   delay(5);
