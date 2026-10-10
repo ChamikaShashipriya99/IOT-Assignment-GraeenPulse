@@ -1,0 +1,12 @@
+.env
+certs/
+logs/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+Dockerfile
+docker-compose.yml
+.dockerignore
+greenpulse-backend.service
